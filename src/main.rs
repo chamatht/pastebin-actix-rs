@@ -1,13 +1,13 @@
-#[macro_use]
-extern crate serde_json;
+#[macro_use] extern crate serde_json;
 
 use actix_web::{
-    get, post, middleware, web, App, HttpRequest, HttpResponse, HttpServer
+    get, post, middleware, web, App, HttpResponse, HttpServer
 };
-use serde::{Deserialize};
+use serde::{Serialize,Deserialize};
 use tera::Tera;
 use std::collections::HashMap;
 use std::sync::Mutex;
+use uuid::Uuid;
 
 #[derive(Deserialize)]
 struct FormData {
@@ -16,20 +16,42 @@ struct FormData {
 }
 
 struct TextData {
-    hm: Mutex<HashMap<String,String>>
+    hm: Mutex<HashMap<Uuid,(String,String)>>
+}
+
+#[derive(Serialize,Deserialize)]
+struct BrowseData{
+    uuid:String,
+    title:String,
 }
 
 #[post("/pastedata")]
-async fn testform(t: web::Data<Tera>,
+async fn testform(tera: web::Data<Tera>,
                   form: web::Form<FormData>,
-                  tx: web::Data<TextData>) -> HttpResponse
+                  db: web::Data<TextData>) -> HttpResponse
 {
     let mut ctx = tera::Context::new();
     ctx.insert("title", &form.title);
     ctx.insert("text", &form.text);
-    let body = t.render("paste.html", &ctx).unwrap();
-    let mut hm = tx.hm.lock().unwrap();
-    hm.insert(form.title.clone(), form.text.clone());
+    let body = tera.render("paste.html", &ctx).unwrap();
+    let mut dbl = db.hm.lock().unwrap();
+    dbl.insert(Uuid::new_v4(), (form.title.clone(), form.text.clone()));
+
+    HttpResponse::Ok().body(body)
+}
+
+#[get("/tx/{uid}")]
+async fn display_paste(uid: web::Path<Uuid>,
+                       tera: web::Data<Tera>,
+                       db: web::Data<TextData>) -> HttpResponse
+{
+    let mut ctx = tera::Context::new();
+    let dblocked = db.hm.lock().unwrap();
+    let (title, text) = dblocked.get(&uid).unwrap();
+    ctx.insert("title", &title);
+    ctx.insert("text", &text);
+    let body = tera.render("paste.html", &ctx).unwrap();
+
     HttpResponse::Ok().body(body)
 }
 
@@ -43,25 +65,16 @@ async fn index(t: web::Data<Tera>) -> HttpResponse {
 }
 
 #[get("/browse")]
-async fn browse(t: web::Data<Tera>, tx: web::Data<TextData>) -> HttpResponse {
-    let mut ctx = tera::Context::new();
-    let hm = tx.hm.lock().unwrap();
-    ctx.insert("name", hm.get("hello").unwrap());
-    let body = t.render("index.html", &ctx).unwrap();
+async fn browse(tera: web::Data<Tera>, db: web::Data<TextData>) -> HttpResponse {
+    let dbl = db.hm.lock().unwrap();
+    let title_list: Vec<BrowseData> = dbl.iter()
+        .map(|(u,(a,_))|
+            BrowseData{ uuid: u.to_string(), title:a.to_string()} ).collect();
 
-    HttpResponse::Ok().body(body)
-}
+    let data = json!({"tl": title_list});
 
-#[get("/w/{name}")]
-async fn dynamic_name(
-    t: web::Data<Tera>,
-    name: web::Path<String>) -> HttpResponse
-{
-    let data = json!({
-        "name": name.to_string()
-    });
     let ctx = tera::Context::from_value(data).unwrap();
-    let body = t.render("index.html", &ctx).unwrap();
+    let body = tera.render("browse.html", &ctx).unwrap();
 
     HttpResponse::Ok().body(body)
 }
@@ -70,23 +83,23 @@ async fn dynamic_name(
 async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "actix_server=info,actix_web=info");
     env_logger::init();
-    HttpServer::new(|| {
+    let db = web::Data::new(TextData {
+        hm: Mutex::new(HashMap::new())
+    });
+
+    HttpServer::new(move || {
         let tt = Tera::new("templates/**/*").unwrap();
-        let db = web::Data::new(TextData {
-            hm: Mutex::new(HashMap::new())
-        });
         App::new()
             .wrap(middleware::Logger::default())
             .wrap(middleware::Compress::default())
             .data(tt)
-            .register_data(db)
+            .register_data(db.clone())
             .service(testform)
+            .service(display_paste)
             .service(index)
-            .service(dynamic_name)
             .service(browse)
     })
         .bind("127.0.0.1:8080")?
-        //.workers(1)
         .start()
         .await
 }

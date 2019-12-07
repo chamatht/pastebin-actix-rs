@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Home{% endblock title %}
+{% block content %}
+<div style="text-align: center;"><h1>Pastebin</h1></div>
+<br>
+{% for t in tl %}
+<li><a href="/tx/{{ t.uuid }}">{{ t.title }}</a></li>
+{% endfor %}
+</div>
+
+{% endblock content %}
