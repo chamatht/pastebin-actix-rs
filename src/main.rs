@@ -5,10 +5,7 @@ use actix_web::{
 };
 use serde::{Deserialize};
 use tera::Tera;
-use std::sync::Mutex;
 use tokio_postgres::{Client, NoTls};
-
-type DB = Mutex<Client>;
 
 #[derive(Deserialize)]
 struct FormData {
@@ -18,9 +15,8 @@ struct FormData {
 
 #[post("/pastedata")]
 async fn form(form: web::Form<FormData>,
-              db: web::Data<DB>) -> HttpResponse
+              dbl: web::Data<Client>) -> HttpResponse
 {
-    let dbl = db.lock().unwrap();
     let stmt = dbl.prepare(
         "INSERT INTO pastes(title,text) VALUES($1,$2) RETURNING uid;")
                 .await.unwrap();
@@ -34,9 +30,8 @@ async fn form(form: web::Form<FormData>,
 
 #[post("/deltx/{uid}")]
 async fn delete_paste(uid: web::Path<i64>,
-                       db: web::Data<DB>) -> HttpResponse
+                       dbl: web::Data<Client>) -> HttpResponse
 {
-    let dbl = db.lock().unwrap();
     let stmt
         = dbl.prepare("DELETE FROM pastes WHERE uid=$1;").await.unwrap();
     dbl.execute(&stmt, &[uid.as_ref()]).await.unwrap();
@@ -49,9 +44,8 @@ async fn delete_paste(uid: web::Path<i64>,
 #[get("/tx/{uid}")]
 async fn display_paste(uid: web::Path<i64>,
                        tera: web::Data<Tera>,
-                       db: web::Data<DB>) -> HttpResponse
+                       dbl: web::Data<Client>) -> HttpResponse
 {
-    let dbl = db.lock().unwrap();
     let stmt
         = dbl.prepare("SELECT title,text FROM pastes WHERE uid=$1;").await.unwrap();
     let row = dbl.query_one(&stmt, &[uid.as_ref()]).await.unwrap();
@@ -77,8 +71,7 @@ async fn index(t: web::Data<Tera>) -> HttpResponse {
 }
 
 #[get("/browse")]
-async fn browse(tera: web::Data<Tera>, db: web::Data<DB>) -> HttpResponse {
-    let dbl = db.lock().unwrap();
+async fn browse(tera: web::Data<Tera>, dbl: web::Data<Client>) -> HttpResponse {
     let stmt
         = dbl.prepare("SELECT uid,title FROM pastes;").await.unwrap();
     let rows
@@ -104,15 +97,13 @@ async fn main() -> std::io::Result<()> {
             "host=localhost dbname=pastebin user=postsql password=postsql",
             NoTls).await.unwrap();
 
-    let mydb:DB = Mutex::new(ct);
-
     tokio::spawn(async move {
         if let Err(e) = &connection.await {
             eprintln!("connection error: {}", e);
         }
     });
 
-    let dbdata = web::Data::new(mydb);
+    let dbdata = web::Data::new(ct);
 
     HttpServer::new(move || {
         let tt = Tera::new("templates/**/*").unwrap();
