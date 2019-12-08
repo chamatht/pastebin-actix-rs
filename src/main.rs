@@ -1,5 +1,8 @@
 #[macro_use] extern crate serde_json;
 
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 use actix_web::{
     get, post, middleware, web, App, HttpResponse, HttpServer, http::header
 };
