@@ -1,13 +1,15 @@
 {% extends "base.html" %}
-{% block title %}Home{% endblock title %}
+{% block title %}View{% endblock title %}
 {% block content %}
 <div style="text-align: center;"><h1>Pastebin</h1></div>
 <br>
 <h3>{{title}}</h3>
-<div class="form-group shadow-textarea">
+<form class="form-group shadow-textarea" action="/deltx/{{ uid }}" method="POST">
        <textarea class="form-control z-depth-1" name="text" id="text2" readonly>
               {{text}}
        </textarea>
-</div>
+       <br>
+       <button type="submit" class="btn btn-outline-danger">Delete</button>
+</form>
 
 {% endblock content %}

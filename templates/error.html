@@ -1,11 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Browse{% endblock title %}
+{% block title %}Error{% endblock title %}
 {% block content %}
 <div style="text-align: center;"><h1>Pastebin</h1></div>
 <br>
-{% for t in tl %}
-<li><a href="/tx/{{ t.0 }}">{{ t.1 }}</a></li>
-{% endfor %}
-</div>
-
+<h3>Error Occurred</h3>
+<br>
+<h2></h2>
 {% endblock content %}

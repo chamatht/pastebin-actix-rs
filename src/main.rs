@@ -1,13 +1,14 @@
 #[macro_use] extern crate serde_json;
 
 use actix_web::{
-    get, post, middleware, web, App, HttpResponse, HttpServer
+    get, post, middleware, web, App, HttpResponse, HttpServer, http::header
 };
-use serde::{Serialize,Deserialize};
+use serde::{Deserialize};
 use tera::Tera;
-use std::collections::HashMap;
 use std::sync::Mutex;
-use uuid::Uuid;
+use tokio_postgres::{Client, NoTls};
+
+type DB = Mutex<Client>;
 
 #[derive(Deserialize)]
 struct FormData {
@@ -15,41 +16,52 @@ struct FormData {
     text: String
 }
 
-struct TextData {
-    hm: Mutex<HashMap<Uuid,(String,String)>>
-}
-
-#[derive(Serialize,Deserialize)]
-struct BrowseData{
-    uuid:String,
-    title:String,
-}
-
 #[post("/pastedata")]
-async fn testform(tera: web::Data<Tera>,
-                  form: web::Form<FormData>,
-                  db: web::Data<TextData>) -> HttpResponse
+async fn form(form: web::Form<FormData>,
+              db: web::Data<DB>) -> HttpResponse
 {
-    let mut ctx = tera::Context::new();
-    ctx.insert("title", &form.title);
-    ctx.insert("text", &form.text);
-    let body = tera.render("paste.html", &ctx).unwrap();
-    let mut dbl = db.hm.lock().unwrap();
-    dbl.insert(Uuid::new_v4(), (form.title.clone(), form.text.clone()));
+    let dbl = db.lock().unwrap();
+    let stmt = dbl.prepare(
+        "INSERT INTO pastes(title,text) VALUES($1,$2) RETURNING uid;")
+                .await.unwrap();
+    let uid:i64 = dbl.query_one(&stmt, &[&form.title, &form.text])
+                    .await.unwrap().get(0);
+    let location = "/tx/".to_string() + uid.to_string().as_str();
+    HttpResponse::MovedPermanently()
+        .header(header::LOCATION,location)
+        .finish().into_body()
+}
 
-    HttpResponse::Ok().body(body)
+#[post("/deltx/{uid}")]
+async fn delete_paste(uid: web::Path<i64>,
+                       db: web::Data<DB>) -> HttpResponse
+{
+    let dbl = db.lock().unwrap();
+    let stmt
+        = dbl.prepare("DELETE FROM pastes WHERE uid=$1;").await.unwrap();
+    dbl.execute(&stmt, &[uid.as_ref()]).await.unwrap();
+
+    HttpResponse::MovedPermanently()
+        .header(header::LOCATION,"/browse")
+        .finish().into_body()
 }
 
 #[get("/tx/{uid}")]
-async fn display_paste(uid: web::Path<Uuid>,
+async fn display_paste(uid: web::Path<i64>,
                        tera: web::Data<Tera>,
-                       db: web::Data<TextData>) -> HttpResponse
+                       db: web::Data<DB>) -> HttpResponse
 {
+    let dbl = db.lock().unwrap();
+    let stmt
+        = dbl.prepare("SELECT title,text FROM pastes WHERE uid=$1;").await.unwrap();
+    let row = dbl.query_one(&stmt, &[uid.as_ref()]).await.unwrap();
+    let title: String = row.get(0);
+    let text: String = row.get(1);
+
     let mut ctx = tera::Context::new();
-    let dblocked = db.hm.lock().unwrap();
-    let (title, text) = dblocked.get(&uid).unwrap();
     ctx.insert("title", &title);
     ctx.insert("text", &text);
+    ctx.insert("uid", uid.as_ref());
     let body = tera.render("paste.html", &ctx).unwrap();
 
     HttpResponse::Ok().body(body)
@@ -65,14 +77,17 @@ async fn index(t: web::Data<Tera>) -> HttpResponse {
 }
 
 #[get("/browse")]
-async fn browse(tera: web::Data<Tera>, db: web::Data<TextData>) -> HttpResponse {
-    let dbl = db.hm.lock().unwrap();
-    let title_list: Vec<BrowseData> = dbl.iter()
-        .map(|(u,(a,_))|
-            BrowseData{ uuid: u.to_string(), title:a.to_string()} ).collect();
+async fn browse(tera: web::Data<Tera>, db: web::Data<DB>) -> HttpResponse {
+    let dbl = db.lock().unwrap();
+    let stmt
+        = dbl.prepare("SELECT uid,title FROM pastes;").await.unwrap();
+    let rows
+        = dbl.query(&stmt, &[]).await.unwrap();
+    let tts: Vec<(i64, String)>
+        = rows.iter().map(|r| (r.get(0),r.get(1)))
+            .collect();
 
-    let data = json!({"tl": title_list});
-
+    let data = json!({"tl": tts});
     let ctx = tera::Context::from_value(data).unwrap();
     let body = tera.render("browse.html", &ctx).unwrap();
 
@@ -83,9 +98,21 @@ async fn browse(tera: web::Data<Tera>, db: web::Data<TextData>) -> HttpResponse 
 async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "actix_server=info,actix_web=info");
     env_logger::init();
-    let db = web::Data::new(TextData {
-        hm: Mutex::new(HashMap::new())
+
+    let (ct, connection) =
+        tokio_postgres::connect(
+            "host=localhost dbname=pastebin user=postsql password=postsql",
+            NoTls).await.unwrap();
+
+    let mydb:DB = Mutex::new(ct);
+
+    tokio::spawn(async move {
+        if let Err(e) = &connection.await {
+            eprintln!("connection error: {}", e);
+        }
     });
+
+    let dbdata = web::Data::new(mydb);
 
     HttpServer::new(move || {
         let tt = Tera::new("templates/**/*").unwrap();
@@ -93,11 +120,12 @@ async fn main() -> std::io::Result<()> {
             .wrap(middleware::Logger::default())
             .wrap(middleware::Compress::default())
             .data(tt)
-            .register_data(db.clone())
-            .service(testform)
+            .register_data(dbdata.clone())
+            .service(form)
             .service(display_paste)
             .service(index)
             .service(browse)
+            .service(delete_paste)
     })
         .bind("127.0.0.1:8080")?
         .start()
