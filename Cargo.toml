@@ -5,7 +5,7 @@ authors = ["chamatht <cham@bits64.com>"]
 edition = "2018"
 
 [dependencies]
-actix-web = "2.0.0-alpha.4"
+actix-web = "2.0.0-alpha.5"
 actix-rt = "1.0.0"
 env_logger = "0.7.1"
 serde = { version = "1.0.103", features = ["derive"] }
